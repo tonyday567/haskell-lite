@@ -77,15 +77,34 @@ If the symbol `command', they're erased before the next command."
 
 
 ;;;###autoload
-(defun haskell-lite-repl-start (&optional cmd)
-  "Start the global haskell repl, in the nearest cabal directory and switch to it."
+(defun haskell-lite-repl-start (&optional cmd dedicated show)
+  "Start the global haskell repl, in the nearest cabal directory and switch to it.
+
+Argument CMD defaults to `haskell-shell-calculate-command' return
+value.  When called interactively with `prefix-arg', it allows
+the user to edit such value and choose whether the interpreter
+should be DEDICATED for the current buffer.
+"
   (interactive)
   (setq default-directory (haskell-cabal-find-dir))
-  (run-haskell-comint cmd nil t))
+  (run-haskell-comint cmd dedicated show))
 
 ;;;###autoload
-(defun haskell-lite-repl-kill (&optional process)
-  "Kill the global haskell repl."
+(defun haskell-lite-repl-start2 (&optional cmd dedicated)
+  "Start the global haskell repl, in the nearest cabal directory and switch to it.
+
+Argument CMD defaults to `haskell-shell-calculate-command' return
+value.  When called interactively with `prefix-arg', it allows
+the user to edit such value and choose whether the interpreter
+should be DEDICATED for the current buffer.
+"
+  (interactive)
+  (setq default-directory (haskell-cabal-find-dir))
+  (run-haskell-comint cmd dedicated t))
+
+;;;###autoload
+(defun haskell-lite-repl-quit (&optional process)
+  "Kill a repl."
   (interactive)
   (let ((proc (or process (haskell-shell-get-process))))
     (when proc
@@ -94,7 +113,7 @@ If the symbol `command', they're erased before the next command."
         (kill-buffer)))))
 
 ;;;###autoload
-(defun haskell-lite-repl-buffer-show ()
+(defun haskell-lite-repl-buffer ()
   "Show the global repl."
   (interactive)
   (when (comint-check-proc "*haskell*")
@@ -112,59 +131,23 @@ If the symbol `command', they're erased before the next command."
   (save-buffer)
   (haskell-shell-load-file (buffer-file-name)))
 
-;;;###autoload
-(defun haskell-lite-repl-region ()
-  "Send the region to the repl."
-  (interactive)
-;;  (haskell-lite--send-string (buffer-substring (region-beginning) (region-end)))
-;;  (message "%s" (buffer-substring (region-beginning) (region-end))))
-  (message "%s"
-           (haskell-shell-send-string-no-output
-            (concat (buffer-substring-no-properties (region-beginning) (region-end)) "\n"))))
+(defun haskell-lite-repl-eval-sync (string &optional process)
+  "Evaluate STRING in PROCESS, wait and return the output."
+  (save-excursion
+    (let ((process (or process (haskell-shell-get-process-or-error)))
+          (comint-preoutput-filter-functions '(haskell-shell-output-filter))
+        (haskell-shell-output-filter-in-progress t)
+        (inhibit-quit t))
+      (or
+       (with-local-quit
+         (haskell-lite-repl-input string process)
+         (haskell-lite-repl-wait-for-output process)
+         (haskell-lite-repl-get-output process))
+       (with-current-buffer (process-buffer process)
+         (comint-interrupt-subjob))))))
 
-;;;###autoload
-(defun haskell-lite-repl-overlay ()
-  "Send the region to the repl and return the answer via an overlay."
-  (interactive)
-  (haskell-lite--eval-overlay
-   (format "%s" (substring-no-properties (haskell-lite-repl-eval-region)))
-   (point)))
-
-(defun haskell-lite--send-string (s)
-  (if (comint-check-proc "*haskell*")
-      (let ((cs (haskell-lite--chunk-string 64 (concat s "\n"))))
-        (mapcar (lambda (c) (comint-send-string "*haskell*" c)) cs))
-    (error "no haskell process running")))
-
-(defun haskell-lite--chunk-string (n s)
-  "Split a string S into chunks of N characters."
-  (let* ((l (length s))
-         (m (min l n))
-         (c (substring s 0 m)))
-    (if (<= l n)
-        (list c)
-      (cons c (tidal-chunk-string n (substring s n))))))
-
-;;;###autoload
-(defun haskell-lite-repl-echo ()
-  "Echo repl output in the minibuffer"
-  (interactive)
-  (add-hook 'comint-output-filter-functions #'(lambda (txt) (message "%s" txt)))
-  (message "%s" "*haskell* is echoing"))
-
-(defun haskell-lite--get-string ()
-  (if (comint-check-proc "*haskell*")
-      (with-current-buffer "*haskell*"
-            (goto-char (process-mark (get-buffer-process (current-buffer))))
-            (forward-line 0)
-            (backward-char)
-            (buffer-substring comint-last-input-end (point)))
-    (error "no haskell process running")))
-
-;;;###autoload
 (defun haskell-lite-repl-input (string &optional process)
   "Send a string to a repl, via the process buffer."
-  (interactive)
   (let ((process (or process (haskell-shell-get-process-or-error))))
     (with-current-buffer (process-buffer process)
       (goto-char (process-mark process))
@@ -183,40 +166,6 @@ statement (not large blocks of code)."
                        (goto-char (match-beginning 0)))))
       (accept-process-output process)))))
 
-;;;###autoload
-(defun haskell-lite-repl-eval-sync (string &optional process)
-  "Evaluate STRING to PROCESS, wait, and return the output."
-  (interactive)
-  (save-excursion
-    (let ((process (or process (haskell-shell-get-process-or-error)))
-          (comint-preoutput-filter-functions '(haskell-shell-output-filter))
-        (haskell-shell-output-filter-in-progress t)
-        (inhibit-quit t))
-      (or
-       (with-local-quit
-         (haskell-lite-repl-input string process)
-         (haskell-lite-repl-wait-for-output process)
-         (haskell-lite-repl-get-output process))
-       (with-current-buffer (process-buffer process)
-         (comint-interrupt-subjob))))))
-
-(defun haskell-lite-repl-wait (string &optional process)
-  "Evaluate STRING to PROCESS and wait for output."
-  (save-excursion
-    (let ((process (or process (haskell-shell-get-process-or-error)))
-        (comint-preoutput-filter-functions '(haskell-shell-output-filter))
-        (haskell-shell-output-filter-in-progress t)
-        (inhibit-quit t))
-      (or
-       (with-local-quit
-         (haskell-lite-repl-input string process)
-         (accept-process-output process)
-         (prog1
-             haskell-shell-output-filter-buffer
-           (setq haskell-shell-output-filter-buffer nil)))
-       (with-current-buffer (process-buffer process)
-         (comint-interrupt-subjob))))))
-
 (defun haskell-lite-repl-get-output (&optional process)
   (let ((process (or process (haskell-shell-get-process-or-error))))
     (save-excursion
@@ -226,14 +175,19 @@ statement (not large blocks of code)."
         (backward-char)
         (buffer-substring comint-last-input-end (point))))))
 
-;;;###autoload
 (defun haskell-lite-repl-eval-region (&optional process)
-  "Send the current region to a repl, via the process buffer."
-  (interactive)
+  "Send the current region to a repl, via the process buffer, wait and return the result."
   (haskell-lite-repl-eval-sync
    (buffer-substring-no-properties (region-beginning) (region-end))
    process))
 
+;;;###autoload
+(defun haskell-lite-repl-overlay ()
+  "Send the region to the repl and return the answer via an overlay."
+  (interactive)
+  (haskell-lite--eval-overlay
+   (format "%s" (substring-no-properties (haskell-lite-repl-eval-region)))
+   (point)))
 
 ;; Overlay
 
@@ -375,6 +329,38 @@ This function also removes itself from `pre-command-hook'."
     :where point
     :duration haskell-lite-eval-result-duration)
   value)
+
+;; result history
+
+(defvar haskell-lite-repl-result-history nil
+  "repl result history for current session"
+)
+
+(defun haskell-lite-repl-result-save (string)
+  "Function to save repl output in history."
+  (push string haskell-lite-repl-result-history)
+  string)
+
+(defun haskell-lite-repl-setup ()
+  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-result-save)
+  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-error))
+
+(defun haskell-lite-repl-error (response)
+  "Look for an <interactive> compile warning or error.
+If there is one, pop that up in a buffer.
+Return the remaining output, if any"
+  (when (string-match "^\n<interactive>:[-0-9]+:[-0-9]+:" response)
+    (haskell-interactive-popup-error response))
+  response
+)
+
+(define-derived-mode haskell-lite-repl-mode haskell-comint-mode "Haskell repl"
+  "Major mode for haskell-lite repl.
+Runs a Haskell repl as a subprocess of Emacs, with Haskell
+I/O through an Emacs buffer.
+"
+  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-result-save)
+  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-error))
 
 (provide 'haskell-lite)
 ;;; haskell-lite.el ends here

@@ -1,0 +1,9 @@
+#+TITLE: haskell-lite
+#+DATE: November 29, 2021
+
+* Description
+
+A minor mode for Haskell supporting:
++ a comint-based repl
+
+
