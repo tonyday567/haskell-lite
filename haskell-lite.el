@@ -90,29 +90,6 @@ should be DEDICATED for the current buffer.
   (run-haskell-comint cmd dedicated show))
 
 ;;;###autoload
-(defun haskell-lite-repl-start2 (&optional cmd dedicated)
-  "Start the global haskell repl, in the nearest cabal directory and switch to it.
-
-Argument CMD defaults to `haskell-shell-calculate-command' return
-value.  When called interactively with `prefix-arg', it allows
-the user to edit such value and choose whether the interpreter
-should be DEDICATED for the current buffer.
-"
-  (interactive)
-  (setq default-directory (haskell-cabal-find-dir))
-  (run-haskell-comint cmd dedicated t))
-
-;;;###autoload
-(defun haskell-lite-repl-quit (&optional process)
-  "Kill a repl."
-  (interactive)
-  (let ((proc (or process (haskell-shell-get-process))))
-    (when proc
-      (with-current-buffer (process-buffer proc)
-        (comint-kill-subjob)
-        (kill-buffer)))))
-
-;;;###autoload
 (defun haskell-lite-repl-buffer ()
   "Show the global repl."
   (interactive)
@@ -147,7 +124,7 @@ should be DEDICATED for the current buffer.
          (comint-interrupt-subjob))))))
 
 (defun haskell-lite-repl-input (string &optional process)
-  "Send a string to a repl, via the process buffer."
+  "Send STRING to a repl, via the PROCESS buffer."
   (let ((process (or process (haskell-shell-get-process-or-error))))
     (with-current-buffer (process-buffer process)
       (goto-char (process-mark process))
@@ -155,7 +132,7 @@ should be DEDICATED for the current buffer.
       (comint-send-input))))
 
 (defun haskell-lite-repl-wait-for-output (process)
-  "Wait until output arrives from a repl.
+  "Wait until output arrives from the PROCESS.
 Note: this is only safe when waiting for the result of a single
 statement (not large blocks of code)."
   (save-excursion
@@ -176,7 +153,7 @@ statement (not large blocks of code)."
         (buffer-substring comint-last-input-end (point))))))
 
 (defun haskell-lite-repl-eval-region (&optional process)
-  "Send the current region to a repl, via the process buffer, wait and return the result."
+  "Send the current region to PROCESS, wait and return the result."
   (haskell-lite-repl-eval-sync
    (buffer-substring-no-properties (region-beginning) (region-end))
    process))
