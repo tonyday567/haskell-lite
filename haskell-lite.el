@@ -20,21 +20,13 @@
 ;;; Code:
 
 (require 'cl-lib)
-(require 'haskell-mode)
-(require 'haskell-hoogle)
-(require 'haskell-commands)
-(require 'haskell-string)
-(require 'haskell-completions)
-(require 'haskell-utils)
-(require 'haskell-customize)
-(require 'haskell-compile)
-(require 'fd-haskell-comint)
+(require 'haskell-ng-mode)
 
 
 ;; Customize
 
 (defgroup haskell-lite nil
-  "Haskell, but lite"
+  "Haskell, but lite."
   :prefix "haskell-lite-"
   :group 'haskell)
 
@@ -57,7 +49,8 @@ with lower priority than the syntax highlighting."
 
 (defcustom haskell-lite-overlays-use-font-lock t
   "If non-nil, results overlays are font-locked as Haskell code.
-If nil, apply `haskell-lite-result-overlay-face' to the entire overlay instead of
+If nil, apply `haskell-lite-result-overlay-face'
+to the entire overlay instead of
 font-locking it."
   :group 'haskell-lite
   :type 'boolean
@@ -76,24 +69,159 @@ If the symbol `command', they're erased before the next command."
   :package-version '(haskell-lite "0.1.0"))
 
 
-;;;###autoload
-(defun haskell-lite-repl-start (&optional cmd dedicated show)
-  "Start the global haskell repl, in the nearest cabal directory and switch to it.
 
-Argument CMD defaults to `haskell-shell-calculate-command' return
-value.  When called interactively with `prefix-arg', it allows
-the user to edit such value and choose whether the interpreter
-should be DEDICATED for the current buffer.
-"
-  (interactive)
-  (setq default-directory (haskell-cabal-find-dir))
-  (run-haskell-comint cmd dedicated show))
+(defcustom haskell-lite-prompt-input-regexps
+  '("> ")
+  "List of regular expressions matching input prompts."
+  :type '(repeat string)
+  :group 'haskell-comint
+  :version "24.4")
+
+(defcustom haskell-lite-prompt-regexp "> "
+  "Regular expression matching top level input prompt of Haskell shell.
+It should not contain a caret (^) at the beginning."
+  :group 'haskell-comint
+  :type 'string)
+
+(defcustom haskell-lite-prompt-block-regexp "| "
+  "Regular expression matching block input prompt of Haskell shell.
+It should not contain a caret (^) at the beginning."
+  :group 'haskell-comint
+  :type 'string)
+
+(defcustom haskell-lite-prompt-debug-regexp "> "
+  "Regular expression matching debugging input prompt of Haskell shell.
+It should not contain a caret (^) at the beginning."
+  :group 'haskell-comint
+  :type 'string)
+
+(defcustom haskell-lite-first-prompt-hook nil
+  "Hook run upon first shell prompt detection.
+This is the place for shell setup functions that need to wait for
+output.  Since the first prompt is ensured, this helps the
+current process to not hang while waiting.  This is useful to
+safely attach setup code for long-running processes that
+eventually provide a shell."
+  :version "25.1"
+  :type 'hook
+  :group 'haskell-comint)
+
+(defcustom haskell-lite-compilation-regexp-alist
+  '(("^\\(\\(.*\\.l?hs\\):\\([0-9]*\\):\\([0-9]*\\)\\(-[0-9]*\\|\\)\\): error:$" 2 3 4 2 1)
+    ("^\\(\\(.*\\.l?hs\\):\\([0-9]*\\):\\([0-9]*\\)\\(-[0-9]*\\|\\)\\): warning:" 2 3 4 1 1)
+    ("^[[:space:]]+[[:word:]]+, called at \\(\\([[:word:]]*/\\)*[[:word:]]+\\.hs\\):\\([[:digit:]]+\\):\\([[:digit:]]+\\) in "
+    1 3 4))
+  "`compilation-error-regexp-alist' for inferior Haskell."
+  :type '(alist string)
+  :group 'haskell-comint)
+
+(defvar haskell-lite-output-filter-in-progress nil)
+(defvar haskell-lite-output-filter-buffer nil)
+
+(defvar haskell-lite--prompt-calculated-input-regexp nil
+  "Calculated input prompt regexp for repl.
+Do not set this variable directly, instead use
+`haskell-lite-prompt-set-calculated-regexps'.")
+
+(defvar haskell-lite--block-prompt nil
+  "Input block prompt for repl.
+Do not set this variable directly, instead use
+`haskell-lite-prompt-set-calculated-regexps'.")
+
+(defun haskell-lite-prompt-set-calculated-regexps ()
+  "Detect and set input and output prompt regexps.
+Build and set the values for `haskell-lite-input-prompt-regexp'
+and `haskell-lite-output-prompt-regexp' using the values from
+`haskell-lite-prompt-regexp', `haskell-lite-prompt-block-regexp',
+`haskell-lite-prompt-debug-regexp',
+`haskell-lite-prompt-input-regexps' and detected prompts from
+`haskell-lite-prompt-detect'."
+  (when (not haskell-lite--prompt-calculated-input-regexp)
+    (let* ((input-prompts nil)
+           (build-regexp
+            (lambda (prompts)
+              (concat "^\\("
+                      (mapconcat #'identity
+                                 (sort prompts
+                                       (lambda (a b)
+                                         (let ((length-a (length a))
+                                               (length-b (length b)))
+                                           (if (= length-a length-b)
+                                               (string< a b)
+                                             (> (length a) (length b))))))
+                                 "\\|")
+                      "\\)"))))
+      ;; Validate ALL regexps
+      (haskell-lite-prompt-validate-regexps)
+      ;; Collect all user defined input prompts
+      (dolist (prompt (append haskell-lite-prompt-input-regexps
+                              (list haskell-lite-prompt-regexp
+                                    haskell-lite-prompt-block-regexp
+                                    haskell-lite-prompt-debug-regexp)))
+        (cl-pushnew prompt input-prompts :test #'string=))
+      ;; Set input and output prompt regexps from collected prompts
+      (setq haskell-lite--prompt-calculated-input-regexp
+            (funcall build-regexp input-prompts)))))
+
+(defun haskell-lite-prompt-validate-regexps ()
+  "Validate all user provided regexps for prompt.
+Signals `user-error' if any of these vars contain invalid
+regexps: `haskell-lite-prompt-regexp',
+`haskell-lite-prompt-block-regexp',
+`haskell-lite-prompt-debug-regexp',
+`haskell-lite-prompt-input-regexps'"
+  (dolist (symbol (list 'haskell-lite-prompt-input-regexps
+                        'haskell-lite-prompt-regexp
+                        'haskell-lite-prompt-block-regexp
+                        'haskell-lite-prompt-debug-regexp))
+    (dolist (regexp (let ((regexps (symbol-value symbol)))
+                      (if (listp regexps)
+                          regexps
+                        (list regexps))))
+      (when (not (haskell-util-valid-regexp-p regexp))
+        (user-error "Invalid regexp %s in `%s'"
+                    regexp symbol)))))
+
+(defun haskell-util-valid-regexp-p (regexp)
+  "Return non-nil if REGEXP is valid."
+  (ignore-errors (string-match regexp "") t))
+
+(defvar haskell-lite--interpreter nil)
+(defvar haskell-lite--interpreter-args nil)
+
+(defvar haskell-lite--block-prompt nil
+  "Input block prompt for inferior haskell shell.
+Do not set this variable directly, instead use
+`haskell-lite-prompt-set-calculated-regexps'.")
+
+(defvar haskell-lite--prompt-calculated-input-regexp nil
+  "Calculated input prompt regexp for inferior haskell shell.
+Do not set this variable directly, instead use
+`haskell-lite-prompt-set-calculated-regexps'.")
+
+
+(defvar haskell-lite--first-prompt-received-output-buffer nil)
+(defvar haskell-lite--first-prompt-received nil)
+(defun haskell-lite-comint-watch-for-first-prompt-output-filter (output)
+  "Run `haskell-lite-first-prompt-hook' when first prompt is found in OUTPUT."
+  (when (not haskell-lite--first-prompt-received)
+    (set (make-local-variable 'haskell-lite--first-prompt-received-output-buffer)
+         (concat haskell-lite--first-prompt-received-output-buffer
+                 (ansi-color-filter-apply output)))
+    (when (haskell-lite-comint-end-of-output-p
+           haskell-lite--first-prompt-received-output-buffer)
+      (set (make-local-variable 'haskell-lite--first-prompt-received) t)
+      (setq-local haskell-lite--first-prompt-received-output-buffer nil)
+      (save-current-buffer
+        (let ((inhibit-quit nil))
+          (run-hooks 'haskell-lite-first-prompt-hook)))))
+  output)
 
 ;;;###autoload
-(defun haskell-lite-repl-buffer ()
+(defun haskell-lite-repl-show ()
   "Show the global repl."
   (interactive)
-  (when (comint-check-proc "*haskell*")
+  (when (comint-check-proc haskell-ng-repl-buffer-name)
     (delete-other-windows)
     (with-current-buffer "*haskell*"
       (let ((window (display-buffer (current-buffer))))
@@ -101,62 +229,95 @@ should be DEDICATED for the current buffer.
 	(save-selected-window
 	  (set-window-point window (point-max)))))))
 
-;;;###autoload
-(defun haskell-lite-repl-load-file ()
-  "Load the current buffer in the global repl."
-  (interactive)
-  (save-buffer)
-  (haskell-shell-load-file (buffer-file-name)))
+(defun haskell-lite-comint-end-of-output-p (output)
+  "Return if OUTPUT ends with input prompt return the input prompt."
+  (let ((start
+         (string-match
+          ;; XXX: It seems on macOS an extra carriage return is attached
+          ;; at the end of output, this handles that too.
+          (concat
+           "\r?\n?"
+           ;; Remove initial caret from calculated regexp
+           (replace-regexp-in-string
+            (rx string-start ?^) ""
+            haskell-lite--prompt-calculated-input-regexp)
+           (rx eos))
+          output)))
+    (when start (substring output start))))
 
-(defun haskell-lite-repl-eval-sync (string &optional process)
+(defun haskell-lite-output-filter (string)
+  "Filter used in `haskell-lite-send-string-no-output' to grab output.
+STRING is the output received to this point from the process.
+This filter saves received output from the process in
+`haskell-lite-output-filter-buffer' and stops receiving it after
+detecting a prompt at the end of the buffer."
+  (setq
+   string (ansi-color-filter-apply string)
+   haskell-lite-output-filter-buffer
+   (concat haskell-lite-output-filter-buffer string))
+  (when (haskell-lite-comint-end-of-output-p
+         haskell-lite-output-filter-buffer)
+    ;; Output ends when `haskell-lite-output-filter-buffer' contains
+    ;; the prompt attached at the end of it.
+    (setq haskell-lite-output-filter-in-progress nil
+          haskell-lite-output-filter-buffer
+          (substring haskell-lite-output-filter-buffer
+                     0 (match-beginning 0))))
+  "")
+
+(defun haskell-lite-repl-eval-sync (string)
   "Evaluate STRING in PROCESS, wait and return the output."
   (save-excursion
-    (let ((process (or process (haskell-shell-get-process-or-error)))
-          (comint-preoutput-filter-functions '(haskell-shell-output-filter))
-        (haskell-shell-output-filter-in-progress t)
+    (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
+          (comint-preoutput-filter-functions '(haskell-lite-output-filter))
+        (haskell-lite-output-filter-in-progress t)
         (inhibit-quit t))
       (or
        (with-local-quit
-         (haskell-lite-repl-input string process)
-         (haskell-lite-repl-wait-for-output process)
-         (haskell-lite-repl-get-output process))
-       (with-current-buffer (process-buffer process)
-         (comint-interrupt-subjob))))))
+         (haskell-lite-repl-input string)
+         (haskell-lite-repl-wait-for-output)
+         (haskell-lite-repl-get-output))
+       (with-current-buffer buffer)
+         (comint-interrupt-subjob)))))
 
-(defun haskell-lite-repl-input (string &optional process)
+(defun haskell-lite-repl-input (string)
   "Send STRING to a repl, via the PROCESS buffer."
-  (let ((process (or process (haskell-shell-get-process-or-error))))
-    (with-current-buffer (process-buffer process)
+  (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
+	  (process (get-buffer-process buffer)))
+      (with-current-buffer buffer)
       (goto-char (process-mark process))
       (insert string)
-      (comint-send-input))))
+      (comint-send-input)))
 
-(defun haskell-lite-repl-wait-for-output (process)
-  "Wait until output arrives from the PROCESS.
+(defun haskell-lite-repl-wait-for-output ()
+  "Wait until output arrives from the repl.
 Note: this is only safe when waiting for the result of a single
 statement (not large blocks of code)."
+  (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
+         (process (process-buffer buffer)))
   (save-excursion
-    (with-current-buffer (process-buffer process)
+    (with-current-buffer buffer)
     (while (progn
              (goto-char comint-last-input-end)
              (not (and (re-search-forward comint-prompt-regexp nil t)
                        (goto-char (match-beginning 0)))))
       (accept-process-output process)))))
 
-(defun haskell-lite-repl-get-output (&optional process)
-  (let ((process (or process (haskell-shell-get-process-or-error))))
-    (save-excursion
-      (with-current-buffer (process-buffer process)
-        (goto-char (process-mark process))
-        (forward-line 0)
-        (backward-char)
-        (buffer-substring comint-last-input-end (point))))))
+(defun haskell-lite-repl-get-output ()
+  "Get output from the repl."
+  (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
+         (process (process-buffer buffer)))
+        (save-excursion
+        (with-current-buffer buffer)
+                (goto-char (process-mark process))
+                (forward-line 0)
+                (backward-char)
+                (buffer-substring comint-last-input-end (point)))))
 
-(defun haskell-lite-repl-eval-region (&optional process)
+(defun haskell-lite-repl-eval-region ()
   "Send the current region to PROCESS, wait and return the result."
   (haskell-lite-repl-eval-sync
-   (buffer-substring-no-properties (region-beginning) (region-end))
-   process))
+   (buffer-substring-no-properties (region-beginning) (region-end))))
 
 ;;;###autoload
 (defun haskell-lite-repl-overlay ()
@@ -171,10 +332,10 @@ statement (not large blocks of code)."
 (defun haskell-lite--make-overlay (l r type &rest props)
   "Place an overlay between L and R and return it.
 
-TYPE is a symbol put on the overlay's category property.  It is
+TYPE is a symbol put on the overlay category property.  It is
 used to easily remove all overlays from a region with:
 
-    (remove-overlays start end 'category TYPE)
+    (remove-overlays start end category TYPE)
 
 PROPS is a plist of properties and values to add to the overlay."
   (let ((o (make-overlay l (or r l) (current-buffer))))
@@ -310,34 +471,79 @@ This function also removes itself from `pre-command-hook'."
 ;; result history
 
 (defvar haskell-lite-repl-result-history nil
-  "repl result history for current session"
+  "Repl result history for current session."
 )
 
 (defun haskell-lite-repl-result-save (string)
-  "Function to save repl output in history."
+  "Save STRING to repl result history."
   (push string haskell-lite-repl-result-history)
   string)
 
-(defun haskell-lite-repl-setup ()
-  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-result-save)
-  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-error))
-
 (defun haskell-lite-repl-error (response)
-  "Look for an <interactive> compile warning or error.
+  "Look for a compile warning or error in RESPONSE.
 If there is one, pop that up in a buffer.
 Return the remaining output, if any"
   (when (string-match "^\n<interactive>:[-0-9]+:[-0-9]+:" response)
-    (haskell-interactive-popup-error response))
+    (haskell-lite-popup-error response))
   response
 )
 
-(define-derived-mode haskell-lite-repl-mode haskell-comint-mode "Haskell repl"
-  "Major mode for haskell-lite repl.
-Runs a Haskell repl as a subprocess of Emacs, with Haskell
-I/O through an Emacs buffer.
-"
-  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-result-save)
-  (add-hook 'comint-preoutput-filter-functions #'haskell-lite-repl-error))
+(defcustom haskell-lite-popup-errors
+  t
+  "Popup errors in a separate buffer."
+  :type 'boolean
+  :group 'haskell-lite)
+
+(define-derived-mode haskell-lite-error-mode
+  special-mode "Error"
+  "Major mode for viewing Haskell compile errors.")
+
+(defun haskell-lite-popup-error (response)
+  "Pop up RESPONSE as an error."
+  (if haskell-lite-popup-errors
+      (let ((buf (get-buffer-create "*HS-Error*")))
+        (pop-to-buffer buf nil t)
+        (with-current-buffer buf
+          (haskell-lite-error-mode)
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert (propertize response
+                                'font-lock-face
+                                'haskell-interactive-face-compile-error))
+            (goto-char (point-min))
+            (delete-blank-lines)
+            (let ((start-comment (propertize "-- " 'font-lock-face 'font-lock-comment-delimiter-face)))
+              (insert start-comment (propertize "Hit `q' to close this window.\n\n" 'font-lock-face 'font-lock-comment-face))
+              (save-excursion
+                (goto-char (point-max))
+                (insert "\n" start-comment
+                        (propertize "To disable popups, customize `haskell-interactive-popup-errors'.\n\n"
+                                    'font-lock-face 'font-lock-comment-face)))))))
+    (haskell-lite-mode-insert-error response)))
+
+(defun haskell-lite-mode-insert-error (response)
+  "Insert RESPONSE as an error message."
+  (insert "\n"
+          (haskell-lite-fontify-as-mode
+           response
+           'haskell-mode))
+  (haskell-lite-prompt))
+
+(defun haskell-lite-prompt ()
+  "Goto the current repl prompt."
+  (interactive)
+  (pop-to-buffer haskell-ng-repl-buffer-name)
+  (goto-char (point-max)))
+
+(defun haskell-lite-fontify-as-mode (text mode)
+  "Fontify TEXT as MODE, returning the fontified text."
+  (with-temp-buffer
+    (funcall mode)
+    (insert text)
+    (if (fboundp 'font-lock-ensure)
+        (font-lock-ensure)
+      (with-no-warnings (font-lock-fontify-buffer)))
+    (buffer-substring (point-min) (point-max))))
 
 (provide 'haskell-lite)
 ;;; haskell-lite.el ends here
