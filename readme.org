@@ -1,9 +1,49 @@
 #+TITLE: haskell-lite
-#+DATE: November 29, 2021
 
 * Description
 
-A minor mode for Haskell supporting:
-+ a comint-based repl
+A collection of code and ideas for emacs Haskell support.
 
+The library is in the process of being refactored towards [[https://gitlab.com/magus/haskell-ng-mode][haskell-ng-mode]].
 
+* scoping
+
+** in-scope
+- repl
+  Functionality not yet in haskell-ng:
+  - bring/show repl
+  - kill/restart
+  - eval (send a string and return a result)
+  - dealing with the prompt
+  - error management eg hiding or popup of warnings
+- cabal
+  (see [[https://github.com/brotzeit/rustic/blob/master/rustic-cargo.el][rustic-cargo.el]])
+  - cabal compiler/runner (preset options for building and testing)
+  - project management (init/adding deps)
+  - root finding
+- org-babel
+- hoogle
+- hackage/stackage
+- doctor
+  checking a project for health (hls available, cabal file existence, stray configurations)
+
+** out-of-scope
+
+- syntax (via treesit)
+  + fontlock
+  + faces
+  + regexps
+- completion (via lsp)
+  - keyword lists
+  - pragmas
+  - [[https://github.com/horellana/company-ghci][horellana/company-ghci]]
+- navigation (via treesit)
+  - motion
+  - structure definition
+    blocking, folding
+  - indentation
+- flymake/flycheck (lsp)
+- documentation (lsp)
+- tags
+  [[https://github.com/MarcWeber/hasktags/issues/81][MarcWeber/hasktags#81 Tracking: Maintenance and modernization]]
+  [[https://github.com/arybczak/ghc-tags][GitHub - arybczak/ghc-tags: A command line tool that leverages GHC API for ge...]]
