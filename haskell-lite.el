@@ -223,7 +223,7 @@ Do not set this variable directly, instead use
   (interactive)
   (when (comint-check-proc haskell-ng-repl-buffer-name)
     (delete-other-windows)
-    (with-current-buffer "*haskell*"
+    (with-current-buffer haskell-ng-repl-buffer-name
       (let ((window (display-buffer (current-buffer))))
 	(goto-char (point-max))
 	(save-selected-window
@@ -294,7 +294,7 @@ detecting a prompt at the end of the buffer."
 Note: this is only safe when waiting for the result of a single
 statement (not large blocks of code)."
   (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
-         (process (process-buffer buffer)))
+         (process (get-buffer-process buffer)))
   (save-excursion
     (with-current-buffer buffer)
     (while (progn
@@ -306,7 +306,7 @@ statement (not large blocks of code)."
 (defun haskell-lite-repl-get-output ()
   "Get output from the repl."
   (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
-         (process (process-buffer buffer)))
+         (process (get-buffer-process buffer)))
         (save-excursion
         (with-current-buffer buffer)
                 (goto-char (process-mark process))
@@ -529,12 +529,6 @@ Return the remaining output, if any"
            'haskell-mode))
   (haskell-lite-prompt))
 
-(defun haskell-lite-prompt ()
-  "Goto the current repl prompt."
-  (interactive)
-  (pop-to-buffer haskell-ng-repl-buffer-name)
-  (goto-char (point-max)))
-
 (defun haskell-lite-fontify-as-mode (text mode)
   "Fontify TEXT as MODE, returning the fontified text."
   (with-temp-buffer
@@ -544,6 +538,37 @@ Return the remaining output, if any"
         (font-lock-ensure)
       (with-no-warnings (font-lock-fontify-buffer)))
     (buffer-substring (point-min) (point-max))))
+
+;;;autoload
+(defun haskell-lite-prompt ()
+  "Goto the current repl prompt."
+  (interactive)
+  (pop-to-buffer haskell-ng-repl-buffer-name)
+  (goto-char (point-max)))
+
+;;;###autoload
+(defun haskell-lite-repl-restart ()
+  "Restart the repl process."
+  (interactive)
+  (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
+         (process (get-buffer-process buffer)))
+    (when process
+      (with-current-buffer buffer
+        (comint-kill-subjob))))
+  (sleep-for 1)
+  (haskell-ng-repl-run))
+
+;;;autoload
+(defun haskell-lite-repl-quit ()
+  "Quit the repl buffer & kill the process."
+  (interactive)
+  (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
+         (process (get-buffer-process buffer)))
+    (when process
+      (with-current-buffer buffer
+        (comint-kill-subjob)))
+    (sleep-for 1)
+    (kill-buffer buffer)))
 
 (provide 'haskell-lite)
 ;;; haskell-lite.el ends here
