@@ -284,10 +284,10 @@ detecting a prompt at the end of the buffer."
   "Send STRING to a repl, via the PROCESS buffer."
   (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
 	  (process (get-buffer-process buffer)))
-      (with-current-buffer buffer)
-      (goto-char (process-mark process))
-      (insert string)
-      (comint-send-input)))
+      (with-current-buffer buffer
+        (goto-char (process-mark process))
+        (insert string)
+        (comint-send-input))))
 
 (defun haskell-lite-repl-wait-for-output ()
   "Wait until output arrives from the repl.
