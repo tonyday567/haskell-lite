@@ -21,7 +21,7 @@
 
 (require 'cl-lib)
 (require 'haskell-ng-mode)
-
+(require 'ob-haskell-lite)
 
 ;; Customize
 
