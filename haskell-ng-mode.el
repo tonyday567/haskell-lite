@@ -49,12 +49,12 @@
      :feature 'keyword
      :language 'haskell
      `([,@haskell-ng--reserved-words] @font-lock-keyword-face
-     (where) @font-lock-keyword-face)
+     "where" @font-lock-keyword-face)
 
      :feature 'operator
      :language 'haskell
      '((operator) @font-lock-operator-face
-     (fun "->" @font-lock-operator-face))
+     ("->" @font-lock-operator-face))
 
      :feature 'type
      :language 'haskell
@@ -62,7 +62,7 @@
 
      :feature 'module-qualifier
      :language 'haskell
-     '((qualified_variable (module) @font-lock-warning-face))))
+     '((qualified (module) @font-lock-warning-face))))
   "Tree-sitter font-lock settings.")
 
 ;;;###autoload
