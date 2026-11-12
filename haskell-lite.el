@@ -266,19 +266,27 @@ detecting a prompt at the end of the buffer."
   "")
 
 (defun haskell-lite-repl-eval-sync (string)
-  "Evaluate STRING in PROCESS, wait and return the output."
+  "Evaluate STRING in the REPL, wait and return its output."
   (save-excursion
     (let* ((buffer (get-buffer haskell-ng-repl-buffer-name))
-          (comint-preoutput-filter-functions '(haskell-lite-output-filter))
-        (haskell-lite-output-filter-in-progress t)
-        (inhibit-quit t))
+           (process (get-buffer-process buffer))
+           (comint-preoutput-filter-functions '(haskell-lite-output-filter))
+           (haskell-lite--prompt-calculated-input-regexp
+            haskell-ng-repl-prompt-regexp)
+           (haskell-lite-output-filter-in-progress t)
+           (haskell-lite-output-filter-buffer "")
+           (inhibit-quit t))
+      (unless process
+        (error "No Haskell REPL process in %s" haskell-ng-repl-buffer-name))
       (or
        (with-local-quit
-         (haskell-lite-repl-input string)
-         (haskell-lite-repl-wait-for-output)
-         (haskell-lite-repl-get-output))
-       (with-current-buffer buffer)
-         (comint-interrupt-subjob)))))
+         (comint-send-string process (concat string "\n"))
+         (while haskell-lite-output-filter-in-progress
+           (accept-process-output process))
+         (prog1 haskell-lite-output-filter-buffer
+           (setq haskell-lite-output-filter-buffer nil)))
+       (with-current-buffer buffer
+         (comint-interrupt-subjob))))))
 
 (defun haskell-lite-repl-input (string)
   "Send STRING to a repl, via the PROCESS buffer."
